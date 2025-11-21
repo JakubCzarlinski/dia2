@@ -15,7 +15,12 @@ from .precision import Precision
 class ScheduleAttention(nn.Module):
     """Depformer attention that mirrors dia_v2 ScheduleAttention."""
 
-    def __init__(self, config: DiaConfig, compute_dtype: torch.dtype) -> None:
+    def __init__(
+        self,
+        config: DiaConfig,
+        compute_dtype: torch.dtype,
+        device: Optional[torch.device] = None,
+      ):
         super().__init__()
         dep_cfg = config.model.depformer
         runtime = config.runtime
@@ -34,6 +39,7 @@ class ScheduleAttention(nn.Module):
                     dep_cfg.n_embd,
                     3 * self.num_query_heads * self.head_dim,
                     bias=False,
+                    device=device,
                 )
                 for i in self.used_ids
             }
@@ -44,31 +50,33 @@ class ScheduleAttention(nn.Module):
                     self.num_query_heads * self.head_dim,
                     dep_cfg.n_embd,
                     bias=False,
+                    device=device,
                 )
                 for i in self.used_ids
             }
         )
         eps = config.model.normalization_layer_epsilon
-        self.q_norm = nn.RMSNorm(self.head_dim, eps=eps, dtype=torch.float32)
-        self.k_norm = nn.RMSNorm(self.head_dim, eps=eps, dtype=torch.float32)
+        self.q_norm = nn.RMSNorm(self.head_dim, eps=eps, dtype=torch.float32, device=device)
+        self.k_norm = nn.RMSNorm(self.head_dim, eps=eps, dtype=torch.float32, device=device)
 
         if self.apply_rope:
             self.rotary = RotaryEmbedding(
                 self.head_dim,
                 config.model.rope_min_timescale,
                 config.model.rope_max_timescale,
+                device=device,
             )
             stage_count = max(len(self.schedule), 1)
             self.register_buffer(
                 "stage_positions",
-                torch.arange(stage_count, dtype=torch.long).view(stage_count, 1),
+                torch.arange(stage_count, dtype=torch.long, device=device).view(stage_count, 1),
                 persistent=False,
             )
         else:
             self.rotary = None
             self.register_buffer(
                 "stage_positions",
-                torch.zeros(0, 1, dtype=torch.long),
+                torch.zeros(0, 1, dtype=torch.long, device=device),
                 persistent=False,
             )
 
@@ -121,18 +129,24 @@ class ScheduleAttention(nn.Module):
 
 
 class DepformerLayer(nn.Module):
-    def __init__(self, config: DiaConfig, compute_dtype: torch.dtype):
+    def __init__(
+        self,
+        config: DiaConfig,
+        compute_dtype: torch.dtype,
+        device: Optional[torch.device] = None,
+    ):
         super().__init__()
         dep_cfg = config.model.depformer
         eps = config.model.normalization_layer_epsilon
-        self.pre_norm = nn.RMSNorm(dep_cfg.n_embd, eps=eps, dtype=torch.float32)
-        self.post_norm = nn.RMSNorm(dep_cfg.n_embd, eps=eps, dtype=torch.float32)
-        self.self_attention = ScheduleAttention(config, compute_dtype)
+        self.pre_norm = nn.RMSNorm(dep_cfg.n_embd, eps=eps, dtype=torch.float32, device=device)
+        self.post_norm = nn.RMSNorm(dep_cfg.n_embd, eps=eps, dtype=torch.float32, device=device)
+        self.self_attention = ScheduleAttention(config, compute_dtype, device=device)
         self.mlp = Mlp(
             dep_cfg.n_embd,
             dep_cfg.n_hidden,
             compute_dtype,
             tuple(config.model.depformer.mlp_activations),
+            device=device,
         )
 
     def decode_step(
@@ -152,7 +166,12 @@ class DepformerLayer(nn.Module):
 
 
 class Depformer(nn.Module):
-    def __init__(self, config: DiaConfig, precision: Precision):
+    def __init__(
+        self,
+        config: DiaConfig,
+        precision: Precision,
+        device: Optional[torch.device] = None,
+    ):
         super().__init__()
         self.config = config
         self.precision = precision
@@ -165,7 +184,7 @@ class Depformer(nn.Module):
         self.weights_schedule = runtime.weights_schedule
 
         self.audio_embeds = nn.ModuleList(
-            [nn.Embedding(data_cfg.audio_vocab_size, dep_cfg.n_embd) for _ in range(self.num_depth)]
+            [nn.Embedding(data_cfg.audio_vocab_size, dep_cfg.n_embd, device=device) for _ in range(self.num_depth)]
         )
         if dep_cfg.text_embedding:
             self.text_embed = MultiStreamEmbedding(
@@ -173,6 +192,7 @@ class Depformer(nn.Module):
                 dep_cfg.n_embd,
                 pad_id=data_cfg.text_pad_token_id,
                 output_dtype=precision.compute,
+                device=device,
             )
         else:
             self.text_embed = None
@@ -184,17 +204,18 @@ class Depformer(nn.Module):
                     config.model.decoder.n_embd,
                     dep_cfg.n_embd,
                     bias=False,
+                    device=device,
                 )
                 for i in used_ids
             }
         )
 
-        self.layers = nn.ModuleList([DepformerLayer(config, precision.compute) for _ in range(dep_cfg.n_layer)])
-        self.norm = nn.RMSNorm(dep_cfg.n_embd, eps=config.model.normalization_layer_epsilon)
+        self.layers = nn.ModuleList([DepformerLayer(config, precision.compute, device=device) for _ in range(dep_cfg.n_layer)])
+        self.norm = nn.RMSNorm(dep_cfg.n_embd, eps=config.model.normalization_layer_epsilon, device=device)
         self.logits_dtype = precision.logits
         self.logits = nn.ModuleList(
             [
-                nn.Linear(dep_cfg.n_embd, data_cfg.audio_vocab_size, bias=False)
+                nn.Linear(dep_cfg.n_embd, data_cfg.audio_vocab_size, bias=False, device=device)
                 for _ in range(self.num_depth)
             ]
         )
