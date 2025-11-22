@@ -291,6 +291,8 @@ def run_generation_loop(
     depformer_needs_compiling = [use_torch_compile] * runtime.model.depformer.num_depth
     if use_torch_compile:
         sample_token_fn = torch.compile(sample_token, dynamic=True, mode="max-autotune-no-cudagraphs")
+    else:
+        sample_token_fn = sample_token
     transformer_step = runtime.transformer_step
     depformer_step = runtime.depformer_step
     buffers = _allocate_network_buffers(runtime, branches)
